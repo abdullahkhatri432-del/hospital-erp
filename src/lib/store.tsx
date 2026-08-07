@@ -4,31 +4,65 @@ import * as React from "react";
 
 import {
   APPOINTMENTS as SEED_APPOINTMENTS,
+  CLAIMS as SEED_CLAIMS,
+  DRUGS as SEED_DRUGS,
+  INVOICES as SEED_INVOICES,
+  LAB_REPORTS as SEED_LABS,
   PATIENTS as SEED_PATIENTS,
+  PRESCRIPTIONS as SEED_PRESCRIPTIONS,
 } from "@/data/seed";
-import type { Appointment, AppointmentStatus, Patient, Vitals } from "@/types";
+import type {
+  Appointment,
+  AppointmentStatus,
+  ClaimStatus,
+  Drug,
+  InsuranceClaim,
+  Invoice,
+  LabAnalyte,
+  LabReport,
+  LabStatus,
+  Patient,
+  PatientStatus,
+  Prescription,
+  Vitals,
+} from "@/types";
 
 /**
  * Application state.
  *
- * Deliberately a reducer over in-memory arrays rather than a database. The
- * project is a demonstration, so the priority is that mutations are real and
- * observable, not that they survive a server restart.
+ * A reducer over in-memory arrays rather than a database. This is a
+ * demonstration system, so the priority is that mutations are real,
+ * validated and observable — not that they survive a server restart.
  *
- * State is mirrored into localStorage so a refresh does not wipe work, with
- * a version key so changes to the seed shape invalidate stale saves.
+ * State is mirrored into localStorage with a version key, so a change to the
+ * seed shape invalidates stale saves rather than corrupting the UI.
  */
 
 const STORAGE_KEY = "meridian-erp-state";
-const STORAGE_VERSION = 1;
+// Bumped when the State shape changes.
+const STORAGE_VERSION = 2;
 
-interface State {
+export interface State {
   patients: Patient[];
   appointments: Appointment[];
+  drugs: Drug[];
+  prescriptions: Prescription[];
+  labs: LabReport[];
+  invoices: Invoice[];
+  claims: InsuranceClaim[];
 }
 
-type Action =
+export type Action =
+  /* Clinical */
   | { type: "record-vitals"; patientId: string; vitals: Vitals }
+  | {
+      type: "set-patient-status";
+      patientId: string;
+      status: PatientStatus;
+      ward: string | null;
+      bed: string | null;
+    }
+  /* Appointments */
   | { type: "book-appointment"; appointment: Appointment }
   | {
       type: "set-appointment-status";
@@ -36,63 +70,224 @@ type Action =
       status: AppointmentStatus;
     }
   | { type: "reschedule"; appointmentId: string; scheduledAt: string }
+  /* Pharmacy */
+  | { type: "issue-prescription"; prescription: Prescription }
+  | { type: "dispense-prescription"; prescriptionId: string }
+  | { type: "restock-drug"; drugId: string; quantity: number }
+  /* Laboratory */
+  | { type: "order-lab"; report: LabReport }
+  | { type: "set-lab-status"; reportId: string; status: LabStatus; technician?: string }
+  | { type: "report-lab"; reportId: string; analytes: LabAnalyte[]; technician: string }
+  /* Billing */
+  | { type: "record-payment"; invoiceId: string; amount: number }
+  /* Insurance */
+  | { type: "submit-claim"; claim: InsuranceClaim }
+  | {
+      type: "settle-claim";
+      claimId: string;
+      status: ClaimStatus;
+      approvedAmount: number | null;
+      rejectionReason: string | null;
+    }
+  /* Lifecycle */
   | { type: "restore"; state: State }
   | { type: "reset" };
 
 const initialState: State = {
   patients: SEED_PATIENTS,
   appointments: SEED_APPOINTMENTS,
+  drugs: SEED_DRUGS,
+  prescriptions: SEED_PRESCRIPTIONS,
+  labs: SEED_LABS,
+  invoices: SEED_INVOICES,
+  claims: SEED_CLAIMS,
 };
+
+/** Replace one item in an array, matched by id. */
+function patch<T extends { id: string }>(
+  items: T[],
+  id: string,
+  update: (item: T) => T,
+): T[] {
+  return items.map((item) => (item.id === id ? update(item) : item));
+}
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
-    case "record-vitals": {
+    /* ------------------------------------------------------------------ */
+    /*  Clinical                                                          */
+    /* ------------------------------------------------------------------ */
+
+    case "record-vitals":
       return {
         ...state,
-        patients: state.patients.map((patient) =>
-          patient.id === action.patientId
-            ? {
-                ...patient,
-                // Newest observation appended; NEWS2 always reads the last entry.
-                vitals: [...patient.vitals, action.vitals],
-              }
-            : patient,
+        patients: patch(state.patients, action.patientId, (patient) => ({
+          ...patient,
+          // Appended, so NEWS2 always reads the most recent entry.
+          vitals: [...patient.vitals, action.vitals],
+        })),
+      };
+
+    case "set-patient-status":
+      return {
+        ...state,
+        patients: patch(state.patients, action.patientId, (patient) => ({
+          ...patient,
+          status: action.status,
+          ward: action.ward,
+          bed: action.bed,
+          admittedAt:
+            action.status === "admitted" || action.status === "critical"
+              ? (patient.admittedAt ?? new Date().toISOString())
+              : patient.admittedAt,
+        })),
+      };
+
+    /* ------------------------------------------------------------------ */
+    /*  Appointments                                                      */
+    /* ------------------------------------------------------------------ */
+
+    case "book-appointment":
+      return { ...state, appointments: [...state.appointments, action.appointment] };
+
+    case "set-appointment-status":
+      return {
+        ...state,
+        appointments: patch(
+          state.appointments,
+          action.appointmentId,
+          (appointment) => ({ ...appointment, status: action.status }),
         ),
+      };
+
+    case "reschedule":
+      return {
+        ...state,
+        appointments: patch(
+          state.appointments,
+          action.appointmentId,
+          (appointment) => ({
+            ...appointment,
+            scheduledAt: action.scheduledAt,
+            status: "scheduled",
+          }),
+        ),
+      };
+
+    /* ------------------------------------------------------------------ */
+    /*  Pharmacy                                                          */
+    /* ------------------------------------------------------------------ */
+
+    case "issue-prescription":
+      return {
+        ...state,
+        prescriptions: [...state.prescriptions, action.prescription],
+      };
+
+    case "dispense-prescription": {
+      const prescription = state.prescriptions.find(
+        (p) => p.id === action.prescriptionId,
+      );
+      if (!prescription || prescription.dispensed) return state;
+
+      // Dispensing decrements stock — the inventory must actually move.
+      const drugs = state.drugs.map((drug) => {
+        const item = prescription.items.find((i) => i.drugId === drug.id);
+        if (!item) return drug;
+        return { ...drug, stock: Math.max(0, drug.stock - item.quantity) };
+      });
+
+      return {
+        ...state,
+        drugs,
+        prescriptions: patch(state.prescriptions, action.prescriptionId, (p) => ({
+          ...p,
+          dispensed: true,
+          dispensedAt: new Date().toISOString(),
+        })),
       };
     }
 
-    case "book-appointment": {
+    case "restock-drug":
       return {
         ...state,
-        appointments: [...state.appointments, action.appointment],
+        drugs: patch(state.drugs, action.drugId, (drug) => ({
+          ...drug,
+          stock: drug.stock + action.quantity,
+        })),
       };
-    }
 
-    case "set-appointment-status": {
-      return {
-        ...state,
-        appointments: state.appointments.map((appointment) =>
-          appointment.id === action.appointmentId
-            ? { ...appointment, status: action.status }
-            : appointment,
-        ),
-      };
-    }
+    /* ------------------------------------------------------------------ */
+    /*  Laboratory                                                        */
+    /* ------------------------------------------------------------------ */
 
-    case "reschedule": {
+    case "order-lab":
+      return { ...state, labs: [...state.labs, action.report] };
+
+    case "set-lab-status":
       return {
         ...state,
-        appointments: state.appointments.map((appointment) =>
-          appointment.id === action.appointmentId
-            ? {
-                ...appointment,
-                scheduledAt: action.scheduledAt,
-                status: "scheduled",
-              }
-            : appointment,
-        ),
+        labs: patch(state.labs, action.reportId, (report) => ({
+          ...report,
+          status: action.status,
+          technician: action.technician ?? report.technician,
+        })),
       };
-    }
+
+    case "report-lab":
+      return {
+        ...state,
+        labs: patch(state.labs, action.reportId, (report) => ({
+          ...report,
+          status: "reported",
+          analytes: action.analytes,
+          technician: action.technician,
+          reportedAt: new Date().toISOString(),
+        })),
+      };
+
+    /* ------------------------------------------------------------------ */
+    /*  Billing                                                           */
+    /* ------------------------------------------------------------------ */
+
+    case "record-payment":
+      return {
+        ...state,
+        invoices: patch(state.invoices, action.invoiceId, (invoice) => ({
+          ...invoice,
+          amountPaid: invoice.amountPaid + action.amount,
+        })),
+      };
+
+    /* ------------------------------------------------------------------ */
+    /*  Insurance                                                         */
+    /* ------------------------------------------------------------------ */
+
+    case "submit-claim":
+      return {
+        ...state,
+        claims: [...state.claims, action.claim],
+        invoices: patch(state.invoices, action.claim.invoiceId, (invoice) => ({
+          ...invoice,
+          claimId: action.claim.id,
+        })),
+      };
+
+    case "settle-claim":
+      return {
+        ...state,
+        claims: patch(state.claims, action.claimId, (claim) => ({
+          ...claim,
+          status: action.status,
+          approvedAmount: action.approvedAmount,
+          rejectionReason: action.rejectionReason,
+          settledAt: new Date().toISOString(),
+        })),
+      };
+
+    /* ------------------------------------------------------------------ */
+    /*  Lifecycle                                                         */
+    /* ------------------------------------------------------------------ */
 
     case "restore":
       return action.state;
@@ -135,7 +330,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           if (
             parsed.version === STORAGE_VERSION &&
             Array.isArray(parsed.state?.patients) &&
-            Array.isArray(parsed.state?.appointments)
+            Array.isArray(parsed.state?.appointments) &&
+            Array.isArray(parsed.state?.invoices)
           ) {
             dispatch({ type: "restore", state: parsed.state });
           }

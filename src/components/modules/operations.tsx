@@ -10,20 +10,16 @@ import {
   Stethoscope,
 } from "lucide-react";
 
-import {
-  CLAIMS,
-  DOCTORS,
-  INVOICES,
-  LAB_REPORTS,
-  doctorName,
-  patientName,
-} from "@/data/seed";
+import { DOCTORS, doctorName, patientName } from "@/data/seed";
 import { calculateInvoice, formatINR } from "@/lib/billing";
 import { analyteFlag, cn, formatDateTime, relativeTime } from "@/lib/utils";
 import { useStore } from "@/lib/store";
 import type { Appointment } from "@/types";
 import { Badge, Card, CardHeader, Table, Td } from "@/components/ui/primitives";
 import { BookAppointment } from "@/components/forms/book-appointment";
+import { OrderLab, ReportLab } from "@/components/forms/lab-forms";
+import { RecordPayment } from "@/components/forms/record-payment";
+import { SettleClaim, SubmitClaim } from "@/components/forms/manage-claim";
 
 /* -------------------------------------------------------------------------- */
 /*  Appointments                                                              */
@@ -168,43 +164,132 @@ export function Appointments() {
 /* -------------------------------------------------------------------------- */
 
 export function Laboratory() {
-  const sorted = [...LAB_REPORTS].sort(
+  const { labs, patients, dispatch } = useStore();
+  const [ordering, setOrdering] = React.useState(false);
+  const [reportingId, setReportingId] = React.useState<string | null>(null);
+
+  const sorted = [...labs].sort(
     (a, b) => new Date(b.orderedAt).getTime() - new Date(a.orderedAt).getTime(),
   );
 
+  const reporting = reportingId
+    ? (labs.find((r) => r.id === reportingId) ?? null)
+    : null;
+
+  const nameFor = (patientId: string) => {
+    const patient = patients.find((p) => p.id === patientId);
+    return patient
+      ? `${patient.firstName} ${patient.lastName}`
+      : patientName(patientId);
+  };
+
   return (
     <div className="space-y-5">
+      {ordering && (
+        <Card className="p-5">
+          <OrderLab patients={patients} onClose={() => setOrdering(false)} />
+        </Card>
+      )}
+
+      {reporting && (
+        <Card className="p-5">
+          <ReportLab
+            report={reporting}
+            patientLabel={nameFor(reporting.patientId)}
+            onClose={() => setReportingId(null)}
+          />
+        </Card>
+      )}
+
       <Card>
         <CardHeader
           title="Laboratory workflow"
           subtitle="Orders, collection and reporting status"
           action={
-            <Badge tone="warning" size="md">
-              <FlaskConical className="size-3" />
-              {LAB_REPORTS.filter((r) => r.status !== "reported").length} pending
-            </Badge>
+            <div className="flex items-center gap-3">
+              <Badge tone="warning" size="md">
+                <FlaskConical className="size-3" />
+                {labs.filter((r) => r.status !== "reported").length} pending
+              </Badge>
+              {!ordering && (
+                <button
+                  type="button"
+                  onClick={() => setOrdering(true)}
+                  className="flex items-center gap-1.5 rounded-lg border border-sky-500/35 bg-sky-500/10 px-3 py-1.5 text-[11px] font-medium text-sky-300 transition-colors hover:bg-sky-500/20"
+                >
+                  <Plus className="size-3" />
+                  Order test
+                </button>
+              )}
+            </div>
           }
         />
         <Table
-          headers={["Panel", "Patient", "Ordered by", "Ordered", "Technician", "Status"]}
+          headers={["Panel", "Patient", "Ordered by", "Ordered", "Status", "Actions"]}
         >
           {sorted.map((report) => (
             <tr key={report.id} className="panel-hover">
               <Td className="font-medium text-foreground">{report.panel}</Td>
-              <Td className="text-xs text-muted">
-                {patientName(report.patientId)}
-              </Td>
+              <Td className="text-xs text-muted">{nameFor(report.patientId)}</Td>
               <Td className="text-xs text-muted">{doctorName(report.doctorId)}</Td>
               <Td className="text-[11px] text-subtle">
                 {relativeTime(report.orderedAt)}
               </Td>
-              <Td className="text-xs text-muted">{report.technician ?? "—"}</Td>
               <Td>
                 <Badge
                   tone={report.status === "reported" ? "success" : "warning"}
                 >
                   {report.status}
                 </Badge>
+              </Td>
+              <Td>
+                <div className="flex flex-wrap gap-1">
+                  {report.status === "ordered" && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        dispatch({
+                          type: "set-lab-status",
+                          reportId: report.id,
+                          status: "collected",
+                          technician: "S. Kadam",
+                        })
+                      }
+                      className="rounded border border-white/12 px-2 py-1 text-[10px] text-muted transition-colors hover:border-sky-500/40 hover:text-sky-300"
+                    >
+                      Collect sample
+                    </button>
+                  )}
+                  {report.status === "collected" && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        dispatch({
+                          type: "set-lab-status",
+                          reportId: report.id,
+                          status: "processing",
+                        })
+                      }
+                      className="rounded border border-white/12 px-2 py-1 text-[10px] text-muted transition-colors hover:border-sky-500/40 hover:text-sky-300"
+                    >
+                      Start processing
+                    </button>
+                  )}
+                  {report.status === "processing" && (
+                    <button
+                      type="button"
+                      onClick={() => setReportingId(report.id)}
+                      className="rounded border border-emerald-500/35 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300 transition-colors hover:bg-emerald-500/20"
+                    >
+                      Enter results
+                    </button>
+                  )}
+                  {report.status === "reported" && (
+                    <span className="text-[10px] text-subtle">
+                      {report.technician}
+                    </span>
+                  )}
+                </div>
               </Td>
             </tr>
           ))}
@@ -302,10 +387,24 @@ const INVOICE_TONE = {
 } as const;
 
 export function Billing() {
-  const totals = INVOICES.map((invoice) => ({
+  const { invoices, patients } = useStore();
+  const [payingId, setPayingId] = React.useState<string | null>(null);
+
+  const totals = invoices.map((invoice) => ({
     invoice,
     computed: calculateInvoice(invoice),
   }));
+
+  const paying = payingId
+    ? (invoices.find((i) => i.id === payingId) ?? null)
+    : null;
+
+  const nameFor = (patientId: string) => {
+    const patient = patients.find((p) => p.id === patientId);
+    return patient
+      ? `${patient.firstName} ${patient.lastName}`
+      : patientName(patientId);
+  };
 
   const grandTotal = totals.reduce((sum, t) => sum + t.computed.total, 0);
   const collected = totals.reduce((sum, t) => sum + t.computed.paid, 0);
@@ -313,6 +412,16 @@ export function Billing() {
 
   return (
     <div className="space-y-5">
+      {paying && (
+        <Card className="p-5">
+          <RecordPayment
+            invoice={paying}
+            patientLabel={nameFor(paying.patientId)}
+            onClose={() => setPayingId(null)}
+          />
+        </Card>
+      )}
+
       <div className="grid gap-4 sm:grid-cols-3">
         {[
           { label: "Total invoiced", value: grandTotal, tone: "text-foreground" },
@@ -337,12 +446,12 @@ export function Billing() {
           action={
             <Badge tone="primary" size="md">
               <FileText className="size-3" />
-              {INVOICES.length} invoices
+              {invoices.length} invoices
             </Badge>
           }
         />
         <Table
-          headers={["Invoice", "Patient", "Issued", "Subtotal", "GST", "Total", "Balance", "Status"]}
+          headers={["Invoice", "Patient", "Issued", "Subtotal", "GST", "Total", "Balance", "Status", ""]}
         >
           {totals.map(({ invoice, computed }) => (
             <tr key={invoice.id} className="panel-hover">
@@ -350,7 +459,7 @@ export function Billing() {
                 {invoice.invoiceNo}
               </Td>
               <Td className="text-xs text-muted">
-                {patientName(invoice.patientId)}
+                {nameFor(invoice.patientId)}
               </Td>
               <Td className="text-[11px] text-subtle">
                 {relativeTime(invoice.issuedAt)}
@@ -375,6 +484,19 @@ export function Billing() {
               <Td>
                 <Badge tone={INVOICE_TONE[invoice.status]}>{invoice.status}</Badge>
               </Td>
+              <Td>
+                {computed.balance > 0.01 ? (
+                  <button
+                    type="button"
+                    onClick={() => setPayingId(invoice.id)}
+                    className="rounded border border-emerald-500/35 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300 transition-colors hover:bg-emerald-500/20"
+                  >
+                    Take payment
+                  </button>
+                ) : (
+                  <span className="text-[10px] text-subtle">settled</span>
+                )}
+              </Td>
             </tr>
           ))}
         </Table>
@@ -397,6 +519,17 @@ const CLAIM_TONE = {
 } as const;
 
 export function Insurance() {
+  const { claims: CLAIMS, invoices, patients } = useStore();
+  const [submitting, setSubmitting] = React.useState(false);
+  const [settlingId, setSettlingId] = React.useState<string | null>(null);
+  const settling = settlingId
+    ? (CLAIMS.find((c) => c.id === settlingId) ?? null)
+    : null;
+  const nameFor = (patientId: string) => {
+    const patient = patients.find((p) => p.id === patientId);
+    return patient ? `${patient.firstName} ${patient.lastName}` : patientName(patientId);
+  };
+
   const totalClaimed = CLAIMS.reduce((sum, c) => sum + c.claimedAmount, 0);
   const totalApproved = CLAIMS.reduce((sum, c) => sum + (c.approvedAmount ?? 0), 0);
   const settled = CLAIMS.filter((c) => c.approvedAmount !== null);
@@ -410,6 +543,22 @@ export function Insurance() {
 
   return (
     <div className="space-y-5">
+      {submitting && (
+        <Card className="p-5">
+          <SubmitClaim
+            invoices={invoices}
+            patients={patients}
+            onClose={() => setSubmitting(false)}
+          />
+        </Card>
+      )}
+
+      {settling && (
+        <Card className="p-5">
+          <SettleClaim claim={settling} onClose={() => setSettlingId(null)} />
+        </Card>
+      )}
+
       <div className="grid gap-4 sm:grid-cols-3">
         <Card className="p-5">
           <p className="text-[10px] tracking-wider text-subtle uppercase">
@@ -445,14 +594,26 @@ export function Insurance() {
           title="Insurance claims"
           subtitle="Submission and settlement tracking"
           action={
-            <Badge tone="primary" size="md">
-              <ShieldCheck className="size-3" />
-              {CLAIMS.length} claims
-            </Badge>
+            <div className="flex items-center gap-3">
+              <Badge tone="primary" size="md">
+                <ShieldCheck className="size-3" />
+                {CLAIMS.length} claims
+              </Badge>
+              {!submitting && (
+                <button
+                  type="button"
+                  onClick={() => setSubmitting(true)}
+                  className="flex items-center gap-1.5 rounded-lg border border-sky-500/35 bg-sky-500/10 px-3 py-1.5 text-[11px] font-medium text-sky-300 transition-colors hover:bg-sky-500/20"
+                >
+                  <Plus className="size-3" />
+                  Submit claim
+                </button>
+              )}
+            </div>
           }
         />
         <Table
-          headers={["Claim", "Patient", "Provider", "Claimed", "Approved", "Submitted", "Status"]}
+          headers={["Claim", "Patient", "Provider", "Claimed", "Approved", "Status", ""]}
         >
           {CLAIMS.map((claim) => (
             <tr key={claim.id} className="panel-hover">
@@ -465,7 +626,7 @@ export function Insurance() {
                 </p>
               </Td>
               <Td className="text-xs text-muted">
-                {patientName(claim.patientId)}
+                {nameFor(claim.patientId)}
               </Td>
               <Td className="text-xs text-muted">{claim.provider}</Td>
               <Td className="clinical-num text-xs text-foreground">
@@ -485,15 +646,28 @@ export function Insurance() {
                   ? "pending"
                   : formatINR(claim.approvedAmount)}
               </Td>
-              <Td className="text-[11px] text-subtle">
-                {relativeTime(claim.submittedAt)}
-              </Td>
               <Td>
                 <Badge tone={CLAIM_TONE[claim.status]}>{claim.status}</Badge>
+                <p className="mt-0.5 text-[10px] text-subtle">
+                  {relativeTime(claim.submittedAt)}
+                </p>
                 {claim.rejectionReason && (
                   <p className="mt-1 max-w-[16rem] text-[10px] text-subtle">
                     {claim.rejectionReason}
                   </p>
+                )}
+              </Td>
+              <Td>
+                {claim.approvedAmount === null ? (
+                  <button
+                    type="button"
+                    onClick={() => setSettlingId(claim.id)}
+                    className="rounded border border-emerald-500/35 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300 transition-colors hover:bg-emerald-500/20"
+                  >
+                    Settle
+                  </button>
+                ) : (
+                  <span className="text-[10px] text-subtle">settled</span>
                 )}
               </Td>
             </tr>

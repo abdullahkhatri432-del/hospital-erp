@@ -11,19 +11,13 @@ import {
   Users,
 } from "lucide-react";
 
-import {
-  CLAIMS,
-  DOCTORS,
-  DRUGS,
-  INVOICES,
-  LAB_REPORTS,
-  patientName,
-} from "@/data/seed";
+import { DOCTORS, patientName } from "@/data/seed";
 import { calculateInvoice, formatINRCompact } from "@/lib/billing";
 import { calculateNews2, RISK_PRESENTATION } from "@/lib/clinical/news2";
 import { cn, relativeTime } from "@/lib/utils";
 import { Badge, Card, CardHeader, EmptyState, Table, Td } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
+import { wardOccupancy } from "@/lib/wards";
 
 /** Headline metric tile. */
 function Kpi({
@@ -63,7 +57,8 @@ function Kpi({
 }
 
 export function Overview() {
-  const { patients: PATIENTS, appointments: APPOINTMENTS } = useStore();
+  const { patients: PATIENTS, appointments: APPOINTMENTS, drugs: DRUGS, labs: LAB_REPORTS, invoices: INVOICES, claims: CLAIMS } = useStore();
+  const occupancy = wardOccupancy(PATIENTS);
 
   /* -- Derived metrics ---------------------------------------------------- */
 
@@ -277,6 +272,37 @@ export function Overview() {
                   </div>
                 </div>
               )}
+            </div>
+          </Card>
+
+          {/* Ward occupancy */}
+          <Card>
+            <CardHeader title="Ward occupancy" />
+            <div className="space-y-3 p-5">
+              {occupancy.map((ward) => (
+                <div key={ward.ward}>
+                  <div className="mb-1 flex items-center justify-between text-[11px]">
+                    <span className="text-muted">{ward.ward}</span>
+                    <span className="clinical-num text-subtle">
+                      {ward.occupied} / {ward.total}
+                    </span>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-white/8">
+                    <div
+                      className="h-full rounded-full transition-[width] duration-500"
+                      style={{
+                        width: `${ward.percent}%`,
+                        background:
+                          ward.percent >= 90
+                            ? "#EF4444"
+                            : ward.percent >= 70
+                              ? "#F59E0B"
+                              : "#22C55E",
+                      }}
+                    />
+                  </div>
+                </div>
+              ))}
             </div>
           </Card>
 

@@ -11,7 +11,8 @@ import {
   X,
 } from "lucide-react";
 
-import { DRUGS, PATIENTS } from "@/data/seed";
+import { doctorName } from "@/data/seed";
+import { makeId, useStore } from "@/lib/store";
 import { checkPrescription } from "@/lib/clinical/interactions";
 import { cn, formatDate } from "@/lib/utils";
 import type { PrescriptionItem } from "@/types";
@@ -45,6 +46,7 @@ const SEVERITY_STYLE = {
  * which is the point of the module — the alerts are computed, not scripted.
  */
 function PrescriptionBuilder() {
+  const { patients: PATIENTS, drugs: DRUGS, dispatch } = useStore();
   const [patientId, setPatientId] = React.useState(PATIENTS[0].id);
   const [items, setItems] = React.useState<PrescriptionItem[]>([]);
 
@@ -53,7 +55,7 @@ function PrescriptionBuilder() {
   const alerts = React.useMemo(() => {
     if (!patient || items.length === 0) return [];
     return checkPrescription(patient, items, DRUGS);
-  }, [patient, items]);
+  }, [patient, items, DRUGS]);
 
   const addDrug = (drugId: string) => {
     if (items.some((item) => item.drugId === drugId)) return;
@@ -75,6 +77,30 @@ function PrescriptionBuilder() {
   };
 
   const criticalCount = alerts.filter((a) => a.severity === "critical").length;
+
+  /**
+   * Issue the prescription.
+   *
+   * Critical alerts block issuing outright — that is the entire purpose of
+   * the safety engine. Warnings are advisory and can be overridden.
+   */
+  const issue = () => {
+    if (items.length === 0 || criticalCount > 0) return;
+
+    dispatch({
+      type: "issue-prescription",
+      prescription: {
+        id: makeId("PR"),
+        patientId,
+        doctorId: patient?.primaryDoctorId ?? "D-02",
+        issuedAt: new Date().toISOString(),
+        items,
+        dispensed: false,
+        dispensedAt: null,
+      },
+    });
+    setItems([]);
+  };
 
   return (
     <Card>
@@ -282,6 +308,30 @@ function PrescriptionBuilder() {
               </p>
             </div>
           )}
+
+          {items.length > 0 && (
+            <div className="flex items-center gap-3 border-t border-white/8 pt-4">
+              <button
+                type="button"
+                onClick={issue}
+                disabled={criticalCount > 0}
+                className={cn(
+                  "rounded-lg px-4 py-2 text-xs font-semibold transition-opacity",
+                  criticalCount > 0
+                    ? "cursor-not-allowed bg-white/8 text-subtle"
+                    : "bg-gradient-to-r from-sky-500 to-teal-500 text-white hover:opacity-90",
+                )}
+              >
+                Issue prescription
+              </button>
+              {criticalCount > 0 && (
+                <p className="text-[10px] text-red-400">
+                  Blocked: resolve {criticalCount} critical alert
+                  {criticalCount > 1 ? "s" : ""} first.
+                </p>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -296,6 +346,7 @@ function PrescriptionBuilder() {
 
 /** Inventory table with stock and expiry status. */
 function Inventory() {
+  const { drugs: DRUGS, dispatch } = useStore();
   return (
     <Card>
       <CardHeader
@@ -303,7 +354,7 @@ function Inventory() {
         subtitle={`${DRUGS.length} formulary items`}
       />
       <Table
-        headers={["Drug", "Form", "Stock", "Unit price", "Expiry", "Batch", "Status"]}
+        headers={["Drug", "Form", "Stock", "Unit price", "Expiry", "Batch", "Status", ""]}
       >
         {DRUGS.map((drug) => {
           const expired = new Date(drug.expiryDate) < new Date();
@@ -359,6 +410,17 @@ function Inventory() {
                   </Badge>
                 )}
               </Td>
+              <Td>
+                <button
+                  type="button"
+                  onClick={() =>
+                    dispatch({ type: "restock-drug", drugId: drug.id, quantity: 100 })
+                  }
+                  className="rounded border border-white/12 px-2 py-1 text-[10px] text-muted transition-colors hover:border-sky-500/40 hover:text-sky-300"
+                >
+                  +100
+                </button>
+              </Td>
             </tr>
           );
         })}
@@ -367,10 +429,85 @@ function Inventory() {
   );
 }
 
+export function Dispensing() {
+  const { prescriptions, patients, drugs, dispatch } = useStore();
+  const pending = prescriptions.filter((p) => !p.dispensed);
+
+  return (
+    <Card>
+      <CardHeader
+        title="Dispensing queue"
+        subtitle="Dispensing decrements pharmacy stock"
+        action={
+          <Badge tone={pending.length > 0 ? "warning" : "success"} size="md">
+            {pending.length} awaiting
+          </Badge>
+        }
+      />
+      {prescriptions.length === 0 ? (
+        <div className="px-5 py-10 text-center text-xs text-subtle">
+          No prescriptions issued.
+        </div>
+      ) : (
+        <Table headers={["Prescription", "Patient", "Prescriber", "Items", "Status", ""]}>
+          {[...prescriptions]
+            .sort((a, b) => new Date(b.issuedAt).getTime() - new Date(a.issuedAt).getTime())
+            .map((prescription) => {
+              const patient = patients.find((p) => p.id === prescription.patientId);
+              const names = prescription.items
+                .map((item) => drugs.find((d) => d.id === item.drugId)?.name)
+                .filter(Boolean)
+                .join(", ");
+
+              return (
+                <tr key={prescription.id} className="panel-hover">
+                  <Td className="clinical-num text-xs font-medium text-foreground">
+                    {prescription.id}
+                  </Td>
+                  <Td className="text-xs text-muted">
+                    {patient ? `${patient.firstName} ${patient.lastName}` : "Unknown"}
+                  </Td>
+                  <Td className="text-xs text-muted">
+                    {doctorName(prescription.doctorId)}
+                  </Td>
+                  <Td className="max-w-xs text-xs text-muted">{names}</Td>
+                  <Td>
+                    <Badge tone={prescription.dispensed ? "success" : "warning"}>
+                      {prescription.dispensed ? "dispensed" : "pending"}
+                    </Badge>
+                  </Td>
+                  <Td>
+                    {prescription.dispensed ? (
+                      <span className="text-[10px] text-subtle">complete</span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          dispatch({
+                            type: "dispense-prescription",
+                            prescriptionId: prescription.id,
+                          })
+                        }
+                        className="rounded border border-emerald-500/35 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-300 transition-colors hover:bg-emerald-500/20"
+                      >
+                        Dispense
+                      </button>
+                    )}
+                  </Td>
+                </tr>
+              );
+            })}
+        </Table>
+      )}
+    </Card>
+  );
+}
+
 export function Pharmacy() {
   return (
     <div className="space-y-5">
       <PrescriptionBuilder />
+      <Dispensing />
       <Inventory />
     </div>
   );

@@ -14,6 +14,7 @@ import {
 import { LAB_REPORTS, doctorName } from "@/data/seed";
 import { useStore } from "@/lib/store";
 import { RecordVitals } from "@/components/forms/record-vitals";
+import { ManageAdmission } from "@/components/forms/manage-admission";
 import { calculateNews2, RISK_PRESENTATION } from "@/lib/clinical/news2";
 import { analyteFlag, calculateAge, cn, formatDate, relativeTime } from "@/lib/utils";
 import type { Patient } from "@/types";
@@ -67,12 +68,19 @@ function PatientRecord({
   const presentation = score ? RISK_PRESENTATION[score.risk] : null;
   const labs = LAB_REPORTS.filter((r) => r.patientId === patient.id);
   const [recording, setRecording] = React.useState(false);
+  const [managing, setManaging] = React.useState(false);
 
   return (
     <div className="space-y-5">
       {recording && (
         <Card className="p-5">
           <RecordVitals patient={patient} onClose={() => setRecording(false)} />
+        </Card>
+      )}
+
+      {managing && (
+        <Card className="p-5">
+          <ManageAdmission patient={patient} onClose={() => setManaging(false)} />
         </Card>
       )}
 
@@ -96,6 +104,18 @@ function PatientRecord({
             </p>
           </div>
 
+          <div className="flex items-center gap-2">
+          {!managing && (
+            <button
+              type="button"
+              onClick={() => setManaging(true)}
+              className="rounded-lg border border-white/12 px-3 py-1.5 text-[11px] text-muted transition-colors hover:border-sky-500/40 hover:text-sky-300"
+            >
+              {patient.status === "admitted" || patient.status === "critical"
+                ? "Manage admission"
+                : "Admit"}
+            </button>
+          )}
           <button
             type="button"
             onClick={onClose}
@@ -104,6 +124,7 @@ function PatientRecord({
           >
             <X className="size-4" />
           </button>
+          </div>
         </div>
 
         {/* Allergies are the single most safety-critical field. */}
