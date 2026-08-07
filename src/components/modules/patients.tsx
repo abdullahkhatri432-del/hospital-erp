@@ -5,12 +5,15 @@ import {
   Activity,
   ChevronRight,
   Pill,
+  Plus,
   Search,
   ShieldAlert,
   X,
 } from "lucide-react";
 
-import { LAB_REPORTS, PATIENTS, doctorName } from "@/data/seed";
+import { LAB_REPORTS, doctorName } from "@/data/seed";
+import { useStore } from "@/lib/store";
+import { RecordVitals } from "@/components/forms/record-vitals";
 import { calculateNews2, RISK_PRESENTATION } from "@/lib/clinical/news2";
 import { analyteFlag, calculateAge, cn, formatDate, relativeTime } from "@/lib/utils";
 import type { Patient } from "@/types";
@@ -63,9 +66,16 @@ function PatientRecord({
   const score = latest ? calculateNews2(latest) : null;
   const presentation = score ? RISK_PRESENTATION[score.risk] : null;
   const labs = LAB_REPORTS.filter((r) => r.patientId === patient.id);
+  const [recording, setRecording] = React.useState(false);
 
   return (
     <div className="space-y-5">
+      {recording && (
+        <Card className="p-5">
+          <RecordVitals patient={patient} onClose={() => setRecording(false)} />
+        </Card>
+      )}
+
       {/* Header */}
       <Card className="p-5">
         <div className="flex items-start justify-between gap-4">
@@ -125,19 +135,31 @@ function PatientRecord({
             title="NEWS2 assessment"
             subtitle={`Latest observations ${relativeTime(latest.recordedAt)}`}
             action={
-              <div className="text-right">
-                <p
-                  className="clinical-num text-2xl font-bold"
-                  style={{ color: presentation.color }}
-                >
-                  {score.total}
-                </p>
-                <p
-                  className="text-[10px] font-medium"
-                  style={{ color: presentation.color }}
-                >
-                  {presentation.label} risk
-                </p>
+              <div className="flex items-center gap-4">
+                {!recording && (
+                  <button
+                    type="button"
+                    onClick={() => setRecording(true)}
+                    className="flex items-center gap-1.5 rounded-lg border border-sky-500/35 bg-sky-500/10 px-3 py-1.5 text-[11px] font-medium text-sky-300 transition-colors hover:bg-sky-500/20"
+                  >
+                    <Plus className="size-3" />
+                    Record observations
+                  </button>
+                )}
+                <div className="text-right">
+                  <p
+                    className="clinical-num text-2xl font-bold"
+                    style={{ color: presentation.color }}
+                  >
+                    {score.total}
+                  </p>
+                  <p
+                    className="text-[10px] font-medium"
+                    style={{ color: presentation.color }}
+                  >
+                    {presentation.label} risk
+                  </p>
+                </div>
               </div>
             }
           />
@@ -352,29 +374,37 @@ function PatientRecord({
 }
 
 export function Patients() {
+  const { patients } = useStore();
   const [query, setQuery] = React.useState("");
-  const [selected, setSelected] = React.useState<Patient | null>(null);
+  const [selectedId, setSelectedId] = React.useState<string | null>(null);
 
   const filtered = React.useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return PATIENTS;
-    return PATIENTS.filter(
+    if (!q) return patients;
+    return patients.filter(
       (p) =>
         `${p.firstName} ${p.lastName}`.toLowerCase().includes(q) ||
         p.mrn.toLowerCase().includes(q) ||
         p.conditions.some((c) => c.toLowerCase().includes(q)),
     );
-  }, [query]);
+  }, [query, patients]);
+
+  // Resolve from the store by id so newly recorded vitals appear immediately.
+  const selected = selectedId
+    ? (patients.find((p) => p.id === selectedId) ?? null)
+    : null;
 
   if (selected) {
-    return <PatientRecord patient={selected} onClose={() => setSelected(null)} />;
+    return (
+      <PatientRecord patient={selected} onClose={() => setSelectedId(null)} />
+    );
   }
 
   return (
     <Card>
       <CardHeader
         title="Patient register"
-        subtitle={`${PATIENTS.length} records`}
+        subtitle={`${patients.length} records`}
         action={
           <div className="relative">
             <Search className="absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-subtle" />
@@ -405,7 +435,7 @@ export function Patients() {
               <tr
                 key={patient.id}
                 className="panel-hover cursor-pointer"
-                onClick={() => setSelected(patient)}
+                onClick={() => setSelectedId(patient.id)}
               >
                 <Td>
                   <p className="font-medium text-foreground">

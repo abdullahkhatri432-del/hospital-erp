@@ -1,15 +1,16 @@
 "use client";
 
+import * as React from "react";
 import {
   CalendarClock,
   FileText,
   FlaskConical,
+  Plus,
   ShieldCheck,
   Stethoscope,
 } from "lucide-react";
 
 import {
-  APPOINTMENTS,
   CLAIMS,
   DOCTORS,
   INVOICES,
@@ -19,7 +20,10 @@ import {
 } from "@/data/seed";
 import { calculateInvoice, formatINR } from "@/lib/billing";
 import { analyteFlag, cn, formatDateTime, relativeTime } from "@/lib/utils";
+import { useStore } from "@/lib/store";
+import type { Appointment } from "@/types";
 import { Badge, Card, CardHeader, Table, Td } from "@/components/ui/primitives";
+import { BookAppointment } from "@/components/forms/book-appointment";
 
 /* -------------------------------------------------------------------------- */
 /*  Appointments                                                              */
@@ -34,56 +38,128 @@ const APPOINTMENT_TONE = {
   "no-show": "danger",
 } as const;
 
+/** Statuses a receptionist can move an appointment to from the list. */
+const NEXT_STATUS: Partial<
+  Record<Appointment["status"], { label: string; next: Appointment["status"] }[]>
+> = {
+  scheduled: [
+    { label: "Check in", next: "checked-in" },
+    { label: "Cancel", next: "cancelled" },
+    { label: "No show", next: "no-show" },
+  ],
+  "checked-in": [
+    { label: "Start", next: "in-consultation" },
+    { label: "Cancel", next: "cancelled" },
+  ],
+  "in-consultation": [{ label: "Complete", next: "completed" }],
+};
+
 export function Appointments() {
-  const sorted = [...APPOINTMENTS].sort(
+  const { appointments, patients, dispatch } = useStore();
+  const [booking, setBooking] = React.useState(false);
+
+  const sorted = [...appointments].sort(
     (a, b) =>
       new Date(b.scheduledAt).getTime() - new Date(a.scheduledAt).getTime(),
   );
 
   return (
+    <div className="space-y-5">
+      {booking && (
+        <Card className="p-5">
+          <BookAppointment
+            patients={patients}
+            onClose={() => setBooking(false)}
+          />
+        </Card>
+      )}
+
     <Card>
       <CardHeader
         title="Appointment schedule"
-        subtitle={`${APPOINTMENTS.length} appointments across all departments`}
+        subtitle={`${appointments.length} appointments across all departments`}
         action={
-          <Badge tone="primary" size="md">
-            <CalendarClock className="size-3" />
-            {APPOINTMENTS.filter((a) => a.status === "scheduled").length} upcoming
-          </Badge>
+          <div className="flex items-center gap-3">
+            <Badge tone="primary" size="md">
+              <CalendarClock className="size-3" />
+              {appointments.filter((a) => a.status === "scheduled").length} upcoming
+            </Badge>
+            {!booking && (
+              <button
+                type="button"
+                onClick={() => setBooking(true)}
+                className="flex items-center gap-1.5 rounded-lg border border-sky-500/35 bg-sky-500/10 px-3 py-1.5 text-[11px] font-medium text-sky-300 transition-colors hover:bg-sky-500/20"
+              >
+                <Plus className="size-3" />
+                Book appointment
+              </button>
+            )}
+          </div>
         }
       />
       <Table
-        headers={["Patient", "Consultant", "Scheduled", "Reason", "Duration", "Status"]}
+        headers={["Patient", "Consultant", "Scheduled", "Reason", "Status", "Actions"]}
       >
-        {sorted.map((appointment) => (
-          <tr key={appointment.id} className="panel-hover">
-            <Td className="font-medium text-foreground">
-              {patientName(appointment.patientId)}
-            </Td>
-            <Td className="text-xs text-muted">
-              {doctorName(appointment.doctorId)}
-            </Td>
-            <Td>
-              <p className="clinical-num text-xs text-foreground">
-                {formatDateTime(appointment.scheduledAt)}
-              </p>
-              <p className="text-[11px] text-subtle">
-                {relativeTime(appointment.scheduledAt)}
-              </p>
-            </Td>
-            <Td className="max-w-xs text-xs text-muted">{appointment.reason}</Td>
-            <Td className="clinical-num text-xs text-muted">
-              {appointment.durationMinutes}m
-            </Td>
-            <Td>
-              <Badge tone={APPOINTMENT_TONE[appointment.status]}>
-                {appointment.status}
-              </Badge>
-            </Td>
-          </tr>
-        ))}
+        {sorted.map((appointment) => {
+          const actions = NEXT_STATUS[appointment.status] ?? [];
+          const patient = patients.find((p) => p.id === appointment.patientId);
+
+          return (
+            <tr key={appointment.id} className="panel-hover">
+              <Td className="font-medium text-foreground">
+                {patient
+                  ? `${patient.firstName} ${patient.lastName}`
+                  : patientName(appointment.patientId)}
+              </Td>
+              <Td className="text-xs text-muted">
+                {doctorName(appointment.doctorId)}
+              </Td>
+              <Td>
+                <p className="clinical-num text-xs text-foreground">
+                  {formatDateTime(appointment.scheduledAt)}
+                </p>
+                <p className="text-[11px] text-subtle">
+                  {relativeTime(appointment.scheduledAt)} ·{" "}
+                  {appointment.durationMinutes}m
+                </p>
+              </Td>
+              <Td className="max-w-xs text-xs text-muted">
+                {appointment.reason}
+              </Td>
+              <Td>
+                <Badge tone={APPOINTMENT_TONE[appointment.status]}>
+                  {appointment.status}
+                </Badge>
+              </Td>
+              <Td>
+                <div className="flex flex-wrap gap-1">
+                  {actions.map((action) => (
+                    <button
+                      key={action.next}
+                      type="button"
+                      onClick={() =>
+                        dispatch({
+                          type: "set-appointment-status",
+                          appointmentId: appointment.id,
+                          status: action.next,
+                        })
+                      }
+                      className="rounded border border-white/12 px-2 py-1 text-[10px] text-muted transition-colors hover:border-sky-500/40 hover:bg-sky-500/10 hover:text-sky-300"
+                    >
+                      {action.label}
+                    </button>
+                  ))}
+                  {actions.length === 0 && (
+                    <span className="text-[10px] text-subtle">—</span>
+                  )}
+                </div>
+              </Td>
+            </tr>
+          );
+        })}
       </Table>
     </Card>
+    </div>
   );
 }
 

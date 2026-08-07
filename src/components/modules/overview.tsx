@@ -12,19 +12,18 @@ import {
 } from "lucide-react";
 
 import {
-  APPOINTMENTS,
   CLAIMS,
   DOCTORS,
   DRUGS,
   INVOICES,
   LAB_REPORTS,
-  PATIENTS,
   patientName,
 } from "@/data/seed";
 import { calculateInvoice, formatINRCompact } from "@/lib/billing";
 import { calculateNews2, RISK_PRESENTATION } from "@/lib/clinical/news2";
 import { cn, relativeTime } from "@/lib/utils";
 import { Badge, Card, CardHeader, EmptyState, Table, Td } from "@/components/ui/primitives";
+import { useStore } from "@/lib/store";
 
 /** Headline metric tile. */
 function Kpi({
@@ -64,6 +63,8 @@ function Kpi({
 }
 
 export function Overview() {
+  const { patients: PATIENTS, appointments: APPOINTMENTS } = useStore();
+
   /* -- Derived metrics ---------------------------------------------------- */
 
   const admitted = PATIENTS.filter(
